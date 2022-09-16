@@ -1,0 +1,78 @@
+on: [push]
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    
+    - uses: actions/checkout@master
+    
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Create ACR
+      id: create-acr
+      run: |
+        az acr create -n testkubernetes1 -g testkubernetes192b1-rg --location "Korea Central" --sku Standard --admin-enabled
+        echo "::set-output name=acr_username::`az acr credential show -n testkubernetes1 --query username | xargs`"
+        echo "::set-output name=acr_password::`az acr credential show -n testkubernetes1 --query passwords[0].value | xargs`"
+        echo "::add-mask::`az acr credential show -n testkubernetes1 --query passwords[0].value | xargs`"
+
+    - uses: azure/docker-login@v1
+      with:
+        login-server: testkubernetes1.azurecr.io
+        username: ${{ steps.create-acr.outputs.acr_username }}
+        password: ${{ steps.create-acr.outputs.acr_password }}
+
+    - name: Build and push image to ACR
+      id: build-image
+      run: |
+        docker build "$GITHUB_WORKSPACE/" -f  "Dockerfile" -t testkubernetes1.azurecr.io/test1kubernetes:${{ github.sha }} --label dockerfile-path=Dockerfile
+        docker push testkubernetes1.azurecr.io/test1kubernetes:${{ github.sha }}
+    
+    - uses: azure/k8s-set-context@v1
+      id: login
+      with:
+         kubeconfig: ${{ secrets.aks_test1kubernetes_kubeConfig }}
+    
+    - name: Create namespace
+      run: |
+        namespacePresent=`kubectl get namespace | grep test1-kubernetesb536 | wc -l`
+        if [ $namespacePresent -eq 0 ]
+        then
+            echo `kubectl create namespace test1-kubernetesb536`
+        fi
+
+    - uses: azure/k8s-create-secret@v1
+      with:
+        namespace: test1-kubernetesb536
+        container-registry-url: testkubernetes1.azurecr.io
+        container-registry-username: ${{ steps.create-acr.outputs.acr_username }}
+        container-registry-password: ${{ steps.create-acr.outputs.acr_password }}
+        secret-name: test1kubernedockerauth
+
+    - uses: azure/k8s-bake@v1
+      with:
+        renderEngine: 'helm'
+        helmChart: helmchart
+        releaseName: 'aks-helm-release'
+        helm-version: 'latest' 
+        silent: 'false'
+        overrideFiles: |
+          
+        overrides: |
+          replicas:2
+          image.repository:testkubernetes1.azurecr.io/test1kubernetes
+          image.tag:${{ github.sha }}
+          imagePullSecrets:
+            -name:test1kubernedockerauth
+      id: bake
+
+    - uses: azure/k8s-deploy@v1.2
+      with:
+        namespace: test1-kubernetesb536
+        manifests: ${{ steps.bake.outputs.manifestsBundle }}
+        images: |
+          testkubernetes1.azurecr.io/test1kubernetes:${{ github.sha }}
+        imagepullsecrets: |
+          test1kubernedockerauth
