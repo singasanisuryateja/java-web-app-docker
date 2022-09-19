@@ -1,0 +1,68 @@
+# Docker
+# Build a Docker image
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  imageRepo: sampleapp
+  tag: '$(Build.BuildId)'
+
+stages:
+- stage: Build
+  displayName: Build image
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'dockerhub-kubernetes-serviceconnection'
+        repository: '$(imageRepo)'
+        command: 'buildAndPush'
+        Dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
+        tags: |
+          $(tag)
+          latest
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/javawebapp-deployment.yml'
+        artifact: 'manifest'
+        publishLocation: 'pipeline'
+- stage: Deploy
+  displayName: Deploy to Dev
+  dependsOn: Build
+  jobs:
+  - job: Deploy
+    displayName: Deplot to AKS
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        buildType: 'current'
+        artifactName: 'manifest'
+        targetPath: '$(Pipeline.Workspace)/manifest'
+    - task: KubernetesManifest@0
+      inputs:
+        action: 'createSecret'
+        kubernetesServiceConnection: 'test1-kubernetes-serviceconnection'
+        namespace: 'default'
+        secretType: 'dockerRegistry'
+        secretName: '$(dockersecret)'
+        dockerRegistryEndpoint: 'dockerhub-kubernetes-serviceconnection'
+    - task: KubernetesManifest@0
+      inputs:
+        action: 'deploy'
+        kubernetesServiceConnection: 'test1-kubernetes-serviceconnection'
+        namespace: 'default'
+        manifests: |
+          '$(Pipeline.Workspace)/manifest/javawebapp-deployment.yml'
+
+      
